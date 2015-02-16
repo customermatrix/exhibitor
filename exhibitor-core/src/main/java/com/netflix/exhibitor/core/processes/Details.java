@@ -33,12 +33,15 @@ import java.util.List;
 import java.util.Properties;
 import java.util.regex.Pattern;
 
+import static com.google.common.collect.Lists.newArrayList;
+
 class Details
 {
     final File zooKeeperDirectory;
     final File dataDirectory;
     final File logDirectory;
     final File configDirectory;
+    final File binDirectory;
     final String logPaths;
     final String zooKeeperJarPath;
     final Properties properties;
@@ -53,9 +56,10 @@ class Details
         String      logDirectory = config.getString(StringConfigs.ZOOKEEPER_LOG_DIRECTORY);
         this.logDirectory = (logDirectory.trim().length() > 0) ? new File(logDirectory) : this.dataDirectory;
 
+        binDirectory = new File(zooKeeperDirectory, "bin");
         configDirectory = new File(zooKeeperDirectory, "conf");
-        logPaths = findJar(new File(zooKeeperDirectory, "lib"), "(.*log4j.*)|(.*slf4j.*)");
-        zooKeeperJarPath = findJar(this.zooKeeperDirectory, "zookeeper.*");
+        logPaths = findJar(new File(binDirectory, "lib"), "(.*log4j.*)|(.*slf4j.*)");
+        zooKeeperJarPath = findJar(new File(binDirectory, "lib"), "zookeeper.*");
 
         properties = new Properties();
         if ( isValid() )
@@ -157,6 +161,21 @@ class Details
                     }
                 }
             );
-        return Joiner.on(':').join(transformed);
+        return Joiner.on(cpSep()).join(transformed);
+    }
+
+    public String classPath()
+    {
+        return Joiner.on(cpSep()).join(newArrayList(logPaths, zooKeeperJarPath, configDirectory));
+    }
+
+    public static boolean isWindows()
+    {
+        return System.getProperty("os.name").toLowerCase().contains("windows");
+    }
+
+    public static String cpSep()
+    {
+        return isWindows() ? ";" : ":";
     }
 }

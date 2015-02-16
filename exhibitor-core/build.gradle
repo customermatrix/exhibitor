@@ -1,7 +1,7 @@
 apply plugin: 'nebula.provided-base'
 
 dependencies {
-    compile('org.apache.zookeeper:zookeeper:3.4.5') {
+    compile('org.apache.zookeeper:zookeeper:3.4.6') {
         exclude group: 'com.sun.jmx', module: 'jmxri'
         exclude group: 'com.sun.jdmk', module: 'jmxtools'
         exclude group: 'javax.jms', module: 'jms'
@@ -26,6 +26,7 @@ dependencies {
     compile "com.sun.jersey:jersey-core:${jerseyVersion}"
     compile "com.sun.jersey:jersey-server:${jerseyVersion}"
     compile "com.sun.jersey:jersey-json:${jerseyVersion}"
+    compile "commons-io:commons-io:${commonsIoVersion}"
 
     testCompile "org.apache.curator:curator-test:${curatorVersion}"
     testCompile "org.mockito:mockito-core:${mockitoVersion}"

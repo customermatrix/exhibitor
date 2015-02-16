@@ -16,6 +16,7 @@
 
 package com.netflix.exhibitor.core.processes;
 
+import com.google.common.base.Joiner;
 import com.google.common.io.Files;
 import com.netflix.exhibitor.core.Exhibitor;
 import com.netflix.exhibitor.core.activity.ActivityLog;
@@ -24,6 +25,7 @@ import com.netflix.exhibitor.core.config.StringConfigs;
 import com.netflix.exhibitor.core.state.ServerSpec;
 import com.netflix.exhibitor.core.state.ServerType;
 import com.netflix.exhibitor.core.state.UsState;
+import org.apache.commons.io.FileUtils;
 import org.apache.curator.utils.CloseableUtils;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
@@ -34,7 +36,10 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.charset.Charset;
 import java.util.Date;
+import java.util.List;
 import java.util.Properties;
+
+import static com.google.common.collect.Lists.newArrayList;
 
 public class StandardProcessOperations implements ProcessOperations
 {
@@ -42,6 +47,7 @@ public class StandardProcessOperations implements ProcessOperations
 
     private static final int    SLEEP_KILL_TIME_MS = 100;
     private static final int    SLEEP_KILL_WAIT_COUNT = 3;
+    private static final String JAVA = new File(System.getProperty("java.home"), "/bin/java").getAbsolutePath();
 
     public StandardProcessOperations(Exhibitor exhibitor) throws IOException
     {
@@ -60,10 +66,9 @@ public class StandardProcessOperations implements ProcessOperations
         // see http://zookeeper.apache.org/doc/r3.3.3/zookeeperAdmin.html#Ongoing+Data+Directory+Cleanup
         ProcessBuilder      builder = new ProcessBuilder
         (
-            "java",
-            "-cp",
-            String.format("%s:%s:%s", details.zooKeeperJarPath, details.logPaths, details.configDirectory.getPath()),
-            "org.apache.zookeeper.server.PurgeTxnLog",
+            JAVA,
+            "-cp", "\"" + details.classPath() + "\"",
+            org.apache.zookeeper.server.PurgeTxnLog.class.getName(),
             details.logDirectory.getPath(),
             details.dataDirectory.getPath(),
             "-n",
@@ -76,11 +81,11 @@ public class StandardProcessOperations implements ProcessOperations
     @Override
     public void killInstance() throws Exception
     {
-        exhibitor.getLog().add(ActivityLog.Type.INFO, "Attempting to start/restart ZooKeeper");
-
-        exhibitor.getProcessMonitor().destroy(ProcessTypes.ZOOKEEPER);
-
         String pid = getPid();
+
+        exhibitor.getLog().add(ActivityLog.Type.INFO, "Attempting to kill ZooKeeper with pid " + pid);
+
+
         if ( pid == null )
         {
             exhibitor.getLog().add(ActivityLog.Type.INFO, "jps didn't find instance - assuming ZK is not running");
@@ -89,14 +94,10 @@ public class StandardProcessOperations implements ProcessOperations
         {
             waitForKill(pid);
         }
-    }
 
-    private ProcessBuilder buildZkServerScript(String operation) throws IOException
-    {
-        Details         details = new Details(exhibitor);
-        File            binDirectory = new File(details.zooKeeperDirectory, "bin");
-        File            zkServerScript = new File(binDirectory, "zkServer.sh");
-        return new ProcessBuilder(zkServerScript.getPath(), operation).directory(binDirectory.getParentFile());
+        exhibitor.getProcessMonitor().destroy(ProcessTypes.ZOOKEEPER);
+
+        exhibitor.getLog().add(ActivityLog.Type.INFO, "Killed");
     }
 
     @Override
@@ -113,18 +114,39 @@ public class StandardProcessOperations implements ProcessOperations
             Files.write(javaEnvironmentScript, envFile, Charset.defaultCharset());
         }
 
+
+        List<String> extraArgsList = newArrayList();
+
+        try {
+            File extraArgs = new File(details.configDirectory, "extraArgs");
+            if (extraArgs.exists()) {
+                extraArgsList = FileUtils.readLines(extraArgs);
+            }
+        } catch (IOException e) {
+            exhibitor.getLog().add(ActivityLog.Type.ERROR, "error", e);
+        }
+
         if ( (log4jProperties != null) && (log4jProperties.trim().length() > 0) )
         {
             File     log4jFile = new File(details.configDirectory, "log4j.properties");
             Files.write(log4jProperties, log4jFile, Charset.defaultCharset());
+            extraArgsList.add("-Dlog4j.configuration=file:" + log4jFile.getAbsolutePath());
         }
 
 
-        ProcessBuilder  builder = buildZkServerScript("start");
+        List<String> cmd = newArrayList(
+          JAVA,
+          Joiner.on(" ").join(extraArgsList),
+          "-cp", "\"" + details.classPath() + "\"",
+          org.apache.zookeeper.server.quorum.QuorumPeerMain.class.getName(),
+          new File(details.configDirectory, "zoo.cfg").getAbsolutePath()
+        );
+
+        ProcessBuilder builder = new ProcessBuilder(cmd).directory(details.binDirectory.getParentFile());
 
         exhibitor.getProcessMonitor().monitor(ProcessTypes.ZOOKEEPER, builder.start(), null, ProcessMonitor.Mode.LEAVE_RUNNING_ON_INTERRUPT, ProcessMonitor.Streams.BOTH);
 
-        exhibitor.getLog().add(ActivityLog.Type.INFO, "Process started via: " + builder.command().get(0));
+        exhibitor.getLog().add(ActivityLog.Type.INFO, "Process started via: " + Joiner.on(" ").join(cmd));
     }
 
     private void prepConfigFile(Details details) throws IOException
@@ -158,7 +180,7 @@ public class StandardProcessOperations implements ProcessOperations
             localProperties.setProperty("server." + spec.getServerId(), spec.getHostname() + portSpec + spec.getServerType().getZookeeperConfigValue());
         }
 
-        if ( usState.getUs().getServerType() == ServerType.OBSERVER )
+        if ( usState.getUs() != null && usState.getUs().getServerType() == ServerType.OBSERVER )
         {
             localProperties.setProperty("peerType", "observer");
         }
@@ -231,12 +253,8 @@ public class StandardProcessOperations implements ProcessOperations
 
     private void internalKill(String pid, boolean force) throws IOException, InterruptedException
     {
-        Details         details = new Details(exhibitor);
-        File            binDirectory = new File(details.zooKeeperDirectory, "bin");
-        File            zkServerScript = new File(binDirectory, "zkServer.sh");
         ProcessBuilder builder;
-        buildZkServerScript("start");
-        builder = force ? new ProcessBuilder("kill", "-9", pid) : buildZkServerScript("stop");
+        builder = new ProcessBuilder(getKillArgs(pid, force));
         try
         {
             int     result = builder.start().waitFor();
@@ -249,5 +267,27 @@ public class StandardProcessOperations implements ProcessOperations
             exhibitor.getLog().add(ActivityLog.Type.ERROR, "Process interrupted while running: kill -9 " + pid);
             throw e;
         }
+    }
+
+    public List<String> getKillArgs(String pid, boolean force)
+    {
+        List<String> args = newArrayList();
+        if (Details.isWindows()) {
+            args.add("taskkill");
+            if (force)
+            {
+                args.add("/F");
+            }
+            args.add("/T");
+            args.add("/PID");
+        } else {
+            args.add("kill");
+            if (force)
+            {
+                args.add("-9");
+            }
+        }
+        args.add(pid);
+        return args;
     }
 }
